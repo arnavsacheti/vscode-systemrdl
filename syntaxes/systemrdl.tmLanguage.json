@@ -1,0 +1,76 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "SystemRDL",
+    "scopeName": "source.systemrdl",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#types"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.systemrdl",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.block.systemrdl",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.systemrdl",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.systemrdl",
+                            "match": "\\\\."
+                        }
+                    ]
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.systemrdl",
+                    "match": "\\b(0x[0-9A-Fa-f]+|0b[01_]+|\\d+(?:_\\d+)*)\\b"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.systemrdl",
+                    "match": "\\b(addrmap|regfile|reg|field|property|signal|enum|struct|const|external|internal|if|else|for|foreach|while|return|default)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.systemrdl",
+                    "match": "\\b(bit|bits|byte|shortint|int|longint|unsigned|signed|string|boolean|bool)\\b"
+                }
+            ]
+        }
+    }
+}
