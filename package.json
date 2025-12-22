@@ -152,6 +152,8 @@
     "dependencies": {
         "@vscode/python-extension": "^1.0.5",
         "fs-extra": "^11.2.0",
+        "tree-sitter-systemrdl": "^0.0.1",
+        "web-tree-sitter": "^0.24.5",
         "vscode-languageclient": "^8.1.0"
     },
     "devDependencies": {

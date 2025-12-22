@@ -30,6 +30,11 @@ const extensionConfig = {
     module: {
         rules: [
             {
+                test: /\.wasm$/,
+                type: 'asset/resource',
+                // Import Tree-sitter WASM with ?url so webpack emits it to dist.
+            },
+            {
                 test: /\.ts$/,
                 exclude: /node_modules/,
                 use: [
