@@ -10,6 +10,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import traceback
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -166,31 +167,45 @@ PROPERTY_DESCRIPTIONS = {
 
 
 def _try_compile_rdl(source: str, file_path: str) -> Tuple[Optional[Any], List[lsp.Diagnostic]]:
-    """Try to compile RDL source and return (root, diagnostics)."""
+    """Try to compile RDL source and return (root, diagnostics).
+
+    Since systemrdl-compiler only supports compile_file(path) and has no
+    in-memory compile API, we write the current buffer text to a temp file
+    so that diagnostics always reflect the editor's unsaved state.
+    """
     diagnostics: List[lsp.Diagnostic] = []
     try:
         import systemrdl  # type: ignore
+    except ImportError:
+        return None, diagnostics
 
-        rdlc = systemrdl.RDLCompiler()
-        rdlc.compile_file(file_path)
-        root = rdlc.elaborate()
-        _rdl_cache[file_path] = root
-        return root, diagnostics
-    except Exception:
-        pass
-
-    # If file compilation fails, try compiling from source text
+    tmp_path = None
     try:
-        import systemrdl  # type: ignore
+        # Write the in-memory source to a temp file so the compiler sees
+        # the current buffer content, not the (possibly stale) on-disk file.
+        tmp_dir = os.path.dirname(file_path) or None
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".rdl",
+            dir=tmp_dir,
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp.write(source)
+            tmp_path = tmp.name
 
         rdlc = systemrdl.RDLCompiler()
-        rdlc.compile_file(file_path)
+        rdlc.compile_file(tmp_path)
         root = rdlc.elaborate()
         _rdl_cache[file_path] = root
         return root, diagnostics
     except Exception as e:
-        # Parse the compiler error to produce diagnostics
-        diag = _parse_compiler_error(str(e), file_path)
+        # Replace temp file path in error messages so diagnostics
+        # reference the original file, not the ephemeral temp file.
+        error_text = str(e)
+        if tmp_path:
+            error_text = error_text.replace(tmp_path, file_path)
+        diag = _parse_compiler_error(error_text, file_path)
         if diag:
             diagnostics.extend(diag)
         else:
@@ -200,12 +215,18 @@ def _try_compile_rdl(source: str, file_path: str) -> Tuple[Optional[Any], List[l
                         start=lsp.Position(line=0, character=0),
                         end=lsp.Position(line=0, character=0),
                     ),
-                    message=str(e),
+                    message=error_text,
                     severity=lsp.DiagnosticSeverity.Error,
                     source=TOOL_MODULE,
                 )
             )
         return None, diagnostics
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _parse_compiler_error(error_str: str, file_path: str) -> List[lsp.Diagnostic]:
