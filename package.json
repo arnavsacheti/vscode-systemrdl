@@ -1,22 +1,22 @@
 {
-    "name": "<pytool-module>",
+    "name": "systemrdl",
     "displayName": "SystemRDL",
-    "description": "Language support for SystemRDL files.",
+    "description": "Language support for SystemRDL files with PeakRDL integration.",
     "version": "2022.0.0-dev",
     "preview": true,
     "serverInfo": {
-        "name": "<pytool-display-name>",
-        "module": "<pytool-module>"
+        "name": "SystemRDL Language Server",
+        "module": "systemrdl"
     },
-    "publisher": "<my-publisher>",
+    "publisher": "systemrdl",
     "license": "MIT",
-    "homepage": "https://github.com/<my-github>/<my-extension-project>",
+    "homepage": "https://github.com/SystemRDL/vscode-systemrdl",
     "repository": {
         "type": "git",
-        "url": "https://github.com/<my-github>/<my-extension-project>.git"
+        "url": "https://github.com/SystemRDL/vscode-systemrdl.git"
     },
     "bugs": {
-        "url": "https://github.com/<my-github>/<my-extension-project>/issues"
+        "url": "https://github.com/SystemRDL/vscode-systemrdl/issues"
     },
     "galleryBanner": {
         "color": "#1e415e",
@@ -25,7 +25,9 @@
     "keywords": [
         "systemrdl",
         "rdl",
-        "systemrdl-language"
+        "peakrdl",
+        "register-description",
+        "hardware"
     ],
     "engines": {
         "vscode": "^1.78.0"
@@ -41,11 +43,12 @@
     "capabilities": {
         "virtualWorkspaces": {
             "supported": false,
-            "description": "Virtual Workspaces are not supported with <pytool-display-name>."
+            "description": "Virtual Workspaces are not supported with SystemRDL."
         }
     },
     "activationEvents": [
-        "onLanguage:systemrdl"
+        "onLanguage:systemrdl",
+        "workspaceContains:**/*.rdl"
     ],
     "main": "./dist/extension.js",
     "scripts": {
@@ -59,16 +62,24 @@
         "lint": "eslint src --ext ts",
         "format-check": "prettier --check 'src/**/*.ts' 'build/**/*.yml' '.github/**/*.yml'",
         "test": "node ./out/test/runTest.js",
-        "vsce-package": "vsce package -o <pytool-module>.vsix"
+        "vsce-package": "vsce package -o systemrdl.vsix"
     },
     "contributes": {
         "languages": [
             {
                 "id": "systemrdl",
+                "aliases": [
+                    "SystemRDL",
+                    "systemrdl"
+                ],
                 "extensions": [
                     ".rdl"
                 ],
-                "configuration": "./language-configuration.json"
+                "configuration": "./language-configuration.json",
+                "icon": {
+                    "light": "./icons/systemrdl-light.svg",
+                    "dark": "./icons/systemrdl-dark.svg"
+                }
             }
         ],
         "grammars": [
@@ -79,51 +90,52 @@
             }
         ],
         "configuration": {
+            "title": "SystemRDL",
             "properties": {
-                "<pytool-module>.args": {
+                "systemrdl.args": {
                     "default": [],
-                    "description": "Arguments passed in. Each argument is a separate item in the array.",
+                    "markdownDescription": "Additional arguments passed to the SystemRDL language server.",
                     "items": {
                         "type": "string"
                     },
                     "scope": "resource",
                     "type": "array"
                 },
-                "<pytool-module>.path": {
+                "systemrdl.path": {
                     "default": [],
-                    "description": "When set to a path to <pytool-module> binary, extension will use that. NOTE: Using this option may slowdown server response time.",
+                    "markdownDescription": "Path to a custom SystemRDL tool binary. Using this may slow down server response time.",
                     "scope": "resource",
                     "items": {
                         "type": "string"
                     },
                     "type": "array"
                 },
-                "<pytool-module>.importStrategy": {
+                "systemrdl.importStrategy": {
                     "default": "useBundled",
-                    "description": "Defines where `<pytool-module>` is imported from. This setting may be ignored if `<pytool-module>.path` is set.",
+                    "markdownDescription": "Defines where `systemrdl-compiler` is imported from.",
                     "enum": [
                         "useBundled",
                         "fromEnvironment"
                     ],
                     "enumDescriptions": [
-                        "Always use the bundled version of `<pytool-module>`.",
-                        "Use `<pytool-module>` from environment, fallback to bundled version only if `<pytool-module>` not available in the environment."
+                        "Always use the bundled version of systemrdl-compiler.",
+                        "Use systemrdl-compiler from the environment, falling back to bundled if unavailable."
                     ],
                     "scope": "window",
                     "type": "string"
                 },
-                "<pytool-module>.interpreter": {
+                "systemrdl.interpreter": {
                     "default": [],
-                    "description": "When set to a path to python executable, extension will use that to launch the server and any subprocess.",
+                    "markdownDescription": "Path to the Python interpreter used to run the language server.",
                     "scope": "resource",
                     "items": {
                         "type": "string"
                     },
                     "type": "array"
                 },
-                "<pytool-module>.showNotifications": {
+                "systemrdl.showNotifications": {
                     "default": "off",
-                    "description": "Controls when notifications are shown by this extension.",
+                    "markdownDescription": "Controls when notifications are shown by this extension.",
                     "enum": [
                         "off",
                         "onError",
@@ -131,29 +143,134 @@
                         "always"
                     ],
                     "enumDescriptions": [
-                        "All notifications are turned off, any errors or warning are still available in the logs.",
-                        "Notifications are shown only in the case of an error.",
+                        "All notifications are turned off; errors and warnings are still available in the logs.",
+                        "Notifications are shown only for errors.",
                         "Notifications are shown for errors and warnings.",
-                        "Notifications are show for anything that the server chooses to show."
+                        "Notifications are shown for everything the server reports."
                     ],
                     "scope": "machine",
                     "type": "string"
+                },
+                "systemrdl.peakrdl.buildOnSave": {
+                    "default": false,
+                    "markdownDescription": "Automatically run PeakRDL generation when an `.rdl` file is saved.",
+                    "type": "boolean",
+                    "scope": "resource"
+                },
+                "systemrdl.peakrdl.buildConfigPath": {
+                    "default": "",
+                    "markdownDescription": "Path to a `peakrdl.toml` build configuration file. If empty, searches for `peakrdl.toml` in the workspace root.",
+                    "type": "string",
+                    "scope": "resource"
+                },
+                "systemrdl.peakrdl.outputDirectory": {
+                    "default": "generated",
+                    "markdownDescription": "Default output directory for PeakRDL generated files (relative to workspace root).",
+                    "type": "string",
+                    "scope": "resource"
+                },
+                "systemrdl.peakrdl.generators": {
+                    "default": [],
+                    "markdownDescription": "List of PeakRDL generators to run (e.g., `regblock`, `html`, `cheader`). If empty, reads from `peakrdl.toml`.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array",
+                    "scope": "resource"
+                },
+                "systemrdl.inlayHints.parameterTypes": {
+                    "default": true,
+                    "markdownDescription": "Show inlay hints for parameter types.",
+                    "type": "boolean",
+                    "scope": "resource"
+                },
+                "systemrdl.inlayHints.parameterValues": {
+                    "default": true,
+                    "markdownDescription": "Show inlay hints for resolved parameter values.",
+                    "type": "boolean",
+                    "scope": "resource"
+                },
+                "systemrdl.semanticHighlighting": {
+                    "default": true,
+                    "markdownDescription": "Enable semantic syntax highlighting for SystemRDL files.",
+                    "type": "boolean",
+                    "scope": "resource"
+                },
+                "systemrdl.diagnostics.enabled": {
+                    "default": true,
+                    "markdownDescription": "Enable real-time diagnostics (error checking) using the SystemRDL compiler.",
+                    "type": "boolean",
+                    "scope": "resource"
+                },
+                "systemrdl.includePaths": {
+                    "default": [],
+                    "markdownDescription": "Additional include paths for resolving SystemRDL file imports.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array",
+                    "scope": "resource"
                 }
             }
         },
         "commands": [
             {
                 "title": "Restart Server",
-                "category": "<pytool-display-name>",
-                "command": "<pytool-module>.restart"
+                "category": "SystemRDL",
+                "command": "systemrdl.restart"
+            },
+            {
+                "title": "Run PeakRDL Build",
+                "category": "SystemRDL",
+                "command": "systemrdl.peakrdl.build"
+            }
+        ],
+        "semanticTokenTypes": [
+            {
+                "id": "component",
+                "superType": "class",
+                "description": "A SystemRDL component type (addrmap, regfile, reg, field, etc.)"
+            },
+            {
+                "id": "instance",
+                "superType": "variable",
+                "description": "A SystemRDL component instance"
+            },
+            {
+                "id": "rdlProperty",
+                "superType": "property",
+                "description": "A SystemRDL property (sw, hw, reset, etc.)"
+            }
+        ],
+        "semanticTokenModifiers": [
+            {
+                "id": "definition",
+                "description": "Style for definition of a component"
+            },
+            {
+                "id": "readonly",
+                "description": "Style for read-only fields"
+            }
+        ],
+        "semanticTokenScopes": [
+            {
+                "scopes": {
+                    "component": [
+                        "entity.name.type.class.systemrdl"
+                    ],
+                    "instance": [
+                        "variable.other.systemrdl"
+                    ],
+                    "rdlProperty": [
+                        "support.type.property-name.systemrdl"
+                    ]
+                }
             }
         ]
     },
     "dependencies": {
         "@vscode/python-extension": "^1.0.5",
         "fs-extra": "^11.2.0",
-        "tree-sitter-systemrdl": "^0.0.1",
-        "web-tree-sitter": "^0.24.5",
         "vscode-languageclient": "^8.1.0"
     },
     "devDependencies": {

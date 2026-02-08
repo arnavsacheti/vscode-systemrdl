@@ -1,0 +1,29 @@
+# PeakRDL Build Configuration
+# Copy this file to your project root as 'peakrdl.toml' and customize.
+#
+# Each [[generate]] entry defines a build target:
+#   input      - The source .rdl file
+#   outputs    - List of PeakRDL generators to run (regblock, html, cheader, etc.)
+#   output_dir - Output directory (default: "generated")
+#   params     - Parameter overrides as key-value pairs
+#
+# Enable auto-build in VS Code settings:
+#   "systemrdl.peakrdl.buildOnSave": true
+
+[[generate]]
+input = "regs.rdl"
+outputs = ["regblock", "html", "cheader"]
+output_dir = "generated"
+
+# Example with parameter overrides:
+# [[generate]]
+# input = "regs.rdl"
+# outputs = ["cheader"]
+# output_dir = "generated/variant_a"
+# params = { DATA_WIDTH = 32, ADDR_WIDTH = 16 }
+
+# Example with multiple input files:
+# [[generate]]
+# input = "soc_regs.rdl"
+# outputs = ["html"]
+# output_dir = "docs"

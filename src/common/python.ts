@@ -30,7 +30,7 @@ export async function initializePython(disposables: Disposable[]): Promise<void>
         if (api) {
             disposables.push(
                 api.environments.onDidChangeActiveEnvironmentPath((e) => {
-                    onDidChangePythonInterpreterEvent.fire({ path: [e.path], resource: e.resource?.uri });
+                    onDidChangePythonInterpreterEvent.fire({ path: [e.path], resource: e.resource as Uri | undefined });
                 }),
             );
 
