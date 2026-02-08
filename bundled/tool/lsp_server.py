@@ -290,30 +290,128 @@ def _extract_symbols_from_source(source: str, uri: str) -> Dict[str, Any]:
 
     This provides go-to-definition, find references, and completion support
     without requiring a full compilation pass.
+
+    Symbols are scope-aware: definitions, parameters, and instances are stored
+    as lists keyed by bare name, with each entry carrying the scope path and
+    line range of its enclosing component.  This prevents names in different
+    scopes from clobbering each other.
     """
     symbols: Dict[str, Any] = {
-        "definitions": {},  # name -> {line, col, kind, type_name, parent}
+        "definitions": {},  # name -> [{line, col, kind, uri, scope, scope_start, scope_end}]
         "references": {},   # name -> [{line, col}]
-        "parameters": {},   # name -> {line, col, type, default_value}
-        "instances": {},    # name -> {line, col, type_name}
-        "components": [],   # [{name, line, col, kind, children}]
+        "parameters": {},   # name -> [{line, col, type, default_value, keyword, uri, scope, ...}]
+        "instances": {},    # name -> [{line, col, type_name, uri, scope, scope_start, scope_end}]
+        "components": [],   # [{name, line, col, kind, end_line}]
     }
 
     lines = source.split("\n")
 
+    # ---- Build a scope map by tracking brace depth ----
+    # scope_stack entries: (name, kind, start_line)
+    scope_stack: List[Tuple[str, str, int]] = []
+    # Completed scopes: maps (name, start_line) -> end_line
+    scope_ranges: Dict[Tuple[str, int], int] = {}
+
     # Pattern for component definitions:
-    # addrmap name { ... }
-    # reg name { ... }
     comp_def_re = re.compile(
         r"\b(addrmap|regfile|reg|field|signal|enum|struct|constraint|mem)\s+"
         r"([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:#\s*\(.*?\))?\s*\{",
         re.DOTALL,
     )
 
+    # Pattern for anonymous component bodies: "field {} name..." or just "{"
+    open_brace_re = re.compile(r"\{")
+    close_brace_re = re.compile(r"\}")
+
+    # First scan: build scope ranges
+    # We need to pair each component definition with its closing brace.
+    # Track *all* braces, but only named component opens enter the scope stack.
+    brace_depth = 0
+    # anon_depth tracks braces that don't correspond to named components
+    anon_depth_stack: List[bool] = []  # True = named scope, False = anonymous
+
+    in_block_comment = False
+    for line_num, line_text in enumerate(lines):
+        # Strip comments for brace counting
+        clean = line_text
+        j = 0
+        while j < len(clean):
+            if in_block_comment:
+                end = clean.find("*/", j)
+                if end >= 0:
+                    clean = clean[:j] + " " * (end + 2 - j) + clean[end + 2:]
+                    j = end + 2
+                    in_block_comment = False
+                else:
+                    clean = clean[:j]
+                    break
+            else:
+                bc = clean.find("/*", j)
+                lc = clean.find("//", j)
+                if lc >= 0 and (bc < 0 or lc < bc):
+                    clean = clean[:lc]
+                    break
+                if bc >= 0:
+                    in_block_comment = True
+                    end = clean.find("*/", bc + 2)
+                    if end >= 0:
+                        clean = clean[:bc] + " " * (end + 2 - bc) + clean[end + 2:]
+                        j = end + 2
+                        in_block_comment = False
+                    else:
+                        clean = clean[:bc]
+                        break
+                else:
+                    break
+
+        # Remove strings
+        clean = re.sub(r'"[^"]*"', lambda m: " " * (m.end() - m.start()), clean)
+
+        # Detect component definition openings on this line
+        comp_opens_on_line = {}  # col of '{' -> (name, kind)
+        for m in comp_def_re.finditer(clean):
+            brace_col = clean.find("{", m.start())
+            if brace_col >= 0:
+                comp_opens_on_line[brace_col] = (m.group(2), m.group(1))
+
+        # Walk characters for braces
+        for col_idx, ch in enumerate(clean):
+            if ch == "{":
+                if col_idx in comp_opens_on_line:
+                    cname, ckind = comp_opens_on_line[col_idx]
+                    scope_stack.append((cname, ckind, line_num))
+                    anon_depth_stack.append(True)
+                else:
+                    anon_depth_stack.append(False)
+                brace_depth += 1
+            elif ch == "}":
+                if brace_depth > 0:
+                    brace_depth -= 1
+                    if anon_depth_stack:
+                        is_named = anon_depth_stack.pop()
+                        if is_named and scope_stack:
+                            cname, ckind, start_line = scope_stack.pop()
+                            scope_ranges[(cname, start_line)] = line_num
+
+    # ---- Second scan: extract symbols with scope context ----
+
+    # Rebuild scope stack for the extraction pass
+    scope_stack_2: List[Tuple[str, str, int]] = []
+    anon_depth_stack_2: List[bool] = []
+    brace_depth_2 = 0
+
+    def _current_scope_path() -> str:
+        return ".".join(s[0] for s in scope_stack_2)
+
+    def _current_scope_lines() -> Tuple[int, int]:
+        """Return (start_line, end_line) of the innermost named scope."""
+        if scope_stack_2:
+            cname, _, start_line = scope_stack_2[-1]
+            end_line = scope_ranges.get((cname, start_line), len(lines) - 1)
+            return start_line, end_line
+        return 0, len(lines) - 1
+
     # Pattern for component instances:
-    # type_name instance_name;
-    # type_name instance_name @ 0x100;
-    # type_name instance_name[N];
     inst_re = re.compile(
         r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*"
         r"(?:\[.*?\])?\s*(?:@\s*[^\s;]+)?\s*;"
@@ -326,85 +424,148 @@ def _extract_symbols_from_source(source: str, uri: str) -> Dict[str, Any]:
         r"(?:\[.*?\])?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^;]+);"
     )
 
-    # Pattern for property assignments
-    prop_assign_re = re.compile(
-        r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"
-    )
-
-    # Pattern for enum entries
-    enum_entry_re = re.compile(
-        r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\d+|0x[0-9a-fA-F]+)\s*;"
-    )
-
-    # First pass: find all definitions
+    in_block_comment = False
     for line_num, line_text in enumerate(lines):
-        stripped = line_text.strip()
+        # Clean line for parsing (remove comments/strings)
+        clean = line_text
+        j = 0
+        while j < len(clean):
+            if in_block_comment:
+                end = clean.find("*/", j)
+                if end >= 0:
+                    clean = clean[:j] + " " * (end + 2 - j) + clean[end + 2:]
+                    j = end + 2
+                    in_block_comment = False
+                else:
+                    clean = clean[:j]
+                    break
+            else:
+                bc = clean.find("/*", j)
+                lc = clean.find("//", j)
+                if lc >= 0 and (bc < 0 or lc < bc):
+                    clean = clean[:lc]
+                    break
+                if bc >= 0:
+                    in_block_comment = True
+                    end = clean.find("*/", bc + 2)
+                    if end >= 0:
+                        clean = clean[:bc] + " " * (end + 2 - bc) + clean[end + 2:]
+                        j = end + 2
+                        in_block_comment = False
+                    else:
+                        clean = clean[:bc]
+                        break
+                else:
+                    break
+        clean_no_str = re.sub(r'"[^"]*"', lambda m: " " * (m.end() - m.start()), clean)
 
-        # Skip comments
-        if stripped.startswith("//"):
-            continue
+        # Detect component definition openings
+        comp_opens_on_line = {}
+        for m in comp_def_re.finditer(clean_no_str):
+            brace_col = clean_no_str.find("{", m.start())
+            if brace_col >= 0:
+                comp_opens_on_line[brace_col] = (m.group(2), m.group(1), m.start(2))
 
-        # Component definitions
-        for m in comp_def_re.finditer(line_text):
-            comp_type = m.group(1)
-            comp_name = m.group(2)
-            col = m.start(2)
-            symbols["definitions"][comp_name] = {
-                "line": line_num,
-                "col": col,
-                "kind": comp_type,
-                "uri": uri,
-            }
-            symbols["components"].append({
-                "name": comp_name,
-                "line": line_num,
-                "col": col,
-                "kind": comp_type,
-            })
+        # Walk chars to update scope and extract at the right moment
+        pending_comp_defs = []
+        for col_idx, ch in enumerate(clean_no_str):
+            if ch == "{":
+                if col_idx in comp_opens_on_line:
+                    cname, ckind, name_col = comp_opens_on_line[col_idx]
+                    scope_path = _current_scope_path()
+                    sc_start, sc_end = _current_scope_lines()
+
+                    # Record the component definition with its PARENT scope
+                    end_line = scope_ranges.get((cname, line_num), len(lines) - 1)
+                    entry = {
+                        "line": line_num,
+                        "col": name_col,
+                        "kind": ckind,
+                        "uri": uri,
+                        "scope": scope_path,
+                        "scope_start": sc_start,
+                        "scope_end": sc_end,
+                    }
+                    symbols["definitions"].setdefault(cname, []).append(entry)
+                    symbols["components"].append({
+                        "name": cname,
+                        "line": line_num,
+                        "col": name_col,
+                        "kind": ckind,
+                        "end_line": end_line,
+                        "scope": scope_path,
+                    })
+
+                    # Push onto scope stack
+                    scope_stack_2.append((cname, ckind, line_num))
+                    anon_depth_stack_2.append(True)
+                else:
+                    anon_depth_stack_2.append(False)
+                brace_depth_2 += 1
+            elif ch == "}":
+                if brace_depth_2 > 0:
+                    brace_depth_2 -= 1
+                    if anon_depth_stack_2:
+                        is_named = anon_depth_stack_2.pop()
+                        if is_named and scope_stack_2:
+                            scope_stack_2.pop()
+
+        # After processing braces, extract other symbols from this line
+        scope_path = _current_scope_path()
+        sc_start, sc_end = _current_scope_lines()
 
         # Parameter definitions
-        for m in param_re.finditer(line_text):
+        for m in param_re.finditer(clean_no_str):
             param_keyword = m.group(1)
             param_type = (m.group(2) or "").strip()
             param_name = m.group(3)
             param_default = m.group(4).strip()
             col = m.start(3)
-            symbols["parameters"][param_name] = {
+            p_entry = {
                 "line": line_num,
                 "col": col,
                 "type": param_type if param_type else "bit",
                 "default_value": param_default,
                 "keyword": param_keyword,
                 "uri": uri,
+                "scope": scope_path,
+                "scope_start": sc_start,
+                "scope_end": sc_end,
             }
-            symbols["definitions"][param_name] = {
+            symbols["parameters"].setdefault(param_name, []).append(p_entry)
+            symbols["definitions"].setdefault(param_name, []).append({
                 "line": line_num,
                 "col": col,
                 "kind": "parameter",
                 "uri": uri,
-            }
+                "scope": scope_path,
+                "scope_start": sc_start,
+                "scope_end": sc_end,
+            })
 
-        # Instance patterns (only if not a keyword line)
+        # Instance patterns
+        stripped = clean_no_str.strip()
         if not any(stripped.startswith(k) for k in SYSTEMRDL_KEYWORDS):
-            for m in inst_re.finditer(line_text):
+            for m in inst_re.finditer(clean_no_str):
                 type_name = m.group(1)
                 inst_name = m.group(2)
-                # Skip if type_name is a keyword
                 if type_name in SYSTEMRDL_KEYWORDS or type_name in SYSTEMRDL_PROPERTIES:
                     continue
                 col = m.start(2)
-                symbols["instances"][inst_name] = {
+                symbols["instances"].setdefault(inst_name, []).append({
                     "line": line_num,
                     "col": col,
                     "type_name": type_name,
                     "uri": uri,
-                }
+                    "scope": scope_path,
+                    "scope_start": sc_start,
+                    "scope_end": sc_end,
+                })
 
-    # Second pass: find references (all identifier usages)
+    # ---- Third pass: find references (all identifier usages) ----
     ident_re = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
     in_block_comment = False
     for line_num, line_text in enumerate(lines):
-        # Handle block comments
         if "/*" in line_text:
             in_block_comment = True
         if "*/" in line_text:
@@ -413,12 +574,10 @@ def _extract_symbols_from_source(source: str, uri: str) -> Dict[str, Any]:
         if in_block_comment:
             continue
 
-        # Remove line comments
         comment_idx = line_text.find("//")
         if comment_idx >= 0:
             line_text = line_text[:comment_idx]
 
-        # Remove string literals
         line_text = re.sub(r'"[^"]*"', '""', line_text)
 
         for m in ident_re.finditer(line_text):
@@ -433,6 +592,48 @@ def _extract_symbols_from_source(source: str, uri: str) -> Dict[str, Any]:
             })
 
     return symbols
+
+
+def _resolve_symbol(
+    entries: List[Dict[str, Any]], line: int
+) -> Optional[Dict[str, Any]]:
+    """Pick the symbol entry whose scope encloses *line*.
+
+    If multiple entries match, prefer the one with the narrowest (innermost)
+    scope.  Falls back to the first entry if nothing encloses the line.
+    """
+    if not entries:
+        return None
+    if len(entries) == 1:
+        return entries[0]
+
+    best: Optional[Dict[str, Any]] = None
+    best_span = float("inf")
+    for e in entries:
+        s = e.get("scope_start", 0)
+        end = e.get("scope_end", float("inf"))
+        if s <= line <= end:
+            span = end - s
+            if span < best_span:
+                best = e
+                best_span = span
+    return best if best is not None else entries[0]
+
+
+def _resolve_all_unique(
+    name_to_entries: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Dict[str, Any]]:
+    """Flatten a scoped symbol dict by deduplicating on bare name.
+
+    Used by consumers that iterate over *all* definitions (completion,
+    document-symbol) where we want every unique (name, line) pair.
+    Returns name -> first entry (for backward-compatible iteration).
+    """
+    flat: Dict[str, Dict[str, Any]] = {}
+    for name, entries in name_to_entries.items():
+        if entries:
+            flat[name] = entries[0]
+    return flat
 
 
 # **********************************************************
@@ -589,14 +790,17 @@ def _tokenize_segment(
                        SYSTEMRDL_ONWRITE_TYPES + SYSTEMRDL_ADDRESSING_TYPES):
             tokens.append((line_num, start, length, 7, 0))
         elif name in parameters:
-            modifier = 1 if parameters[name].get("line") == line_num else 0
+            resolved = _resolve_symbol(parameters[name], line_num)
+            modifier = 1 if resolved and resolved.get("line") == line_num else 0
             tokens.append((line_num, start, length, 4, modifier))
         elif name in definitions:
-            defn = definitions[name]
-            if defn.get("kind") == "enum":
+            resolved = _resolve_symbol(definitions[name], line_num)
+            if resolved is None:
+                continue
+            if resolved.get("kind") == "enum":
                 tokens.append((line_num, start, length, 2, 0))
-            elif defn.get("kind") in component_types:
-                modifier = 1 if defn.get("line") == line_num else 0
+            elif resolved.get("kind") in component_types:
+                modifier = 1 if resolved.get("line") == line_num else 0
                 tokens.append((line_num, start, length, 1, modifier))
             else:
                 tokens.append((line_num, start, length, 5, 0))
@@ -697,51 +901,64 @@ def hover(params: lsp.TextDocumentPositionParams) -> Optional[lsp.Hover]:
 
     # Check if it's a known symbol
     symbols = _symbol_cache.get(document.uri, {})
+    cursor_line = params.position.line
 
     # Check parameters
     if word in symbols.get("parameters", {}):
-        param = symbols["parameters"][word]
-        param_type = param.get("type", "bit")
-        default_val = param.get("default_value", "")
-        keyword = param.get("keyword", "parameter")
-        hover_text = f"**{word}** ({keyword})\n\n"
-        hover_text += f"- Type: `{param_type}`\n"
-        if default_val:
-            hover_text += f"- Default: `{default_val}`\n"
-        return lsp.Hover(
-            contents=lsp.MarkupContent(
-                kind=lsp.MarkupKind.Markdown,
-                value=hover_text,
+        param = _resolve_symbol(symbols["parameters"][word], cursor_line)
+        if param:
+            param_type = param.get("type", "bit")
+            default_val = param.get("default_value", "")
+            keyword = param.get("keyword", "parameter")
+            scope = param.get("scope", "")
+            hover_text = f"**{word}** ({keyword})\n\n"
+            hover_text += f"- Type: `{param_type}`\n"
+            if default_val:
+                hover_text += f"- Default: `{default_val}`\n"
+            if scope:
+                hover_text += f"- Scope: `{scope}`\n"
+            return lsp.Hover(
+                contents=lsp.MarkupContent(
+                    kind=lsp.MarkupKind.Markdown,
+                    value=hover_text,
+                )
             )
-        )
 
     # Check definitions
     if word in symbols.get("definitions", {}):
-        defn = symbols["definitions"][word]
-        kind = defn.get("kind", "unknown")
-        hover_text = f"**{word}** ({kind})\n\n"
-        if kind in COMPONENT_DESCRIPTIONS:
-            hover_text += COMPONENT_DESCRIPTIONS[kind]
-        hover_text += f"\n\nDefined at line {defn['line'] + 1}"
-        return lsp.Hover(
-            contents=lsp.MarkupContent(
-                kind=lsp.MarkupKind.Markdown,
-                value=hover_text,
+        defn = _resolve_symbol(symbols["definitions"][word], cursor_line)
+        if defn:
+            kind = defn.get("kind", "unknown")
+            scope = defn.get("scope", "")
+            hover_text = f"**{word}** ({kind})\n\n"
+            if kind in COMPONENT_DESCRIPTIONS:
+                hover_text += COMPONENT_DESCRIPTIONS[kind]
+            hover_text += f"\n\nDefined at line {defn['line'] + 1}"
+            if scope:
+                hover_text += f" in `{scope}`"
+            return lsp.Hover(
+                contents=lsp.MarkupContent(
+                    kind=lsp.MarkupKind.Markdown,
+                    value=hover_text,
+                )
             )
-        )
 
     # Check instances
     if word in symbols.get("instances", {}):
-        inst = symbols["instances"][word]
-        type_name = inst.get("type_name", "unknown")
-        hover_text = f"**{word}** (instance of `{type_name}`)\n\n"
-        hover_text += f"Instantiated at line {inst['line'] + 1}"
-        return lsp.Hover(
-            contents=lsp.MarkupContent(
-                kind=lsp.MarkupKind.Markdown,
-                value=hover_text,
+        inst = _resolve_symbol(symbols["instances"][word], cursor_line)
+        if inst:
+            type_name = inst.get("type_name", "unknown")
+            scope = inst.get("scope", "")
+            hover_text = f"**{word}** (instance of `{type_name}`)\n\n"
+            hover_text += f"Instantiated at line {inst['line'] + 1}"
+            if scope:
+                hover_text += f" in `{scope}`"
+            return lsp.Hover(
+                contents=lsp.MarkupContent(
+                    kind=lsp.MarkupKind.Markdown,
+                    value=hover_text,
+                )
             )
-        )
 
     # Check if it's an access type
     if word in SYSTEMRDL_ACCESS_TYPES:
@@ -784,45 +1001,50 @@ def definition(params: lsp.TextDocumentPositionParams) -> Optional[lsp.Location]
         return None
 
     symbols = _symbol_cache.get(document.uri, {})
+    cursor_line = params.position.line
 
     # Check definitions
     if word in symbols.get("definitions", {}):
-        defn = symbols["definitions"][word]
-        target_uri = defn.get("uri", document.uri)
-        return lsp.Location(
-            uri=target_uri,
-            range=lsp.Range(
-                start=lsp.Position(line=defn["line"], character=defn["col"]),
-                end=lsp.Position(line=defn["line"], character=defn["col"] + len(word)),
-            ),
-        )
-
-    # Check parameters
-    if word in symbols.get("parameters", {}):
-        param = symbols["parameters"][word]
-        target_uri = param.get("uri", document.uri)
-        return lsp.Location(
-            uri=target_uri,
-            range=lsp.Range(
-                start=lsp.Position(line=param["line"], character=param["col"]),
-                end=lsp.Position(line=param["line"], character=param["col"] + len(word)),
-            ),
-        )
-
-    # Check instances - go to the type definition
-    if word in symbols.get("instances", {}):
-        inst = symbols["instances"][word]
-        type_name = inst.get("type_name", "")
-        if type_name in symbols.get("definitions", {}):
-            defn = symbols["definitions"][type_name]
+        defn = _resolve_symbol(symbols["definitions"][word], cursor_line)
+        if defn:
             target_uri = defn.get("uri", document.uri)
             return lsp.Location(
                 uri=target_uri,
                 range=lsp.Range(
                     start=lsp.Position(line=defn["line"], character=defn["col"]),
-                    end=lsp.Position(line=defn["line"], character=defn["col"] + len(type_name)),
+                    end=lsp.Position(line=defn["line"], character=defn["col"] + len(word)),
                 ),
             )
+
+    # Check parameters
+    if word in symbols.get("parameters", {}):
+        param = _resolve_symbol(symbols["parameters"][word], cursor_line)
+        if param:
+            target_uri = param.get("uri", document.uri)
+            return lsp.Location(
+                uri=target_uri,
+                range=lsp.Range(
+                    start=lsp.Position(line=param["line"], character=param["col"]),
+                    end=lsp.Position(line=param["line"], character=param["col"] + len(word)),
+                ),
+            )
+
+    # Check instances - go to the type definition
+    if word in symbols.get("instances", {}):
+        inst = _resolve_symbol(symbols["instances"][word], cursor_line)
+        if inst:
+            type_name = inst.get("type_name", "")
+            if type_name in symbols.get("definitions", {}):
+                defn = _resolve_symbol(symbols["definitions"][type_name], cursor_line)
+                if defn:
+                    target_uri = defn.get("uri", document.uri)
+                    return lsp.Location(
+                        uri=target_uri,
+                        range=lsp.Range(
+                            start=lsp.Position(line=defn["line"], character=defn["col"]),
+                            end=lsp.Position(line=defn["line"], character=defn["col"] + len(type_name)),
+                        ),
+                    )
 
     return None
 
@@ -904,37 +1126,47 @@ def document_symbol(
             )
         )
 
-    # Add parameters
-    for name, param in symbols.get("parameters", {}).items():
-        param_range = lsp.Range(
-            start=lsp.Position(line=param["line"], character=param["col"]),
-            end=lsp.Position(line=param["line"], character=param["col"] + len(name)),
-        )
-        result.append(
-            lsp.DocumentSymbol(
-                name=name,
-                kind=lsp.SymbolKind.Constant,
-                range=param_range,
-                selection_range=param_range,
-                detail=f"{param.get('keyword', 'parameter')} {param.get('type', 'bit')}",
+    # Add parameters (all entries, not just one per name)
+    for name, entries in symbols.get("parameters", {}).items():
+        for param in entries:
+            param_range = lsp.Range(
+                start=lsp.Position(line=param["line"], character=param["col"]),
+                end=lsp.Position(line=param["line"], character=param["col"] + len(name)),
             )
-        )
+            scope = param.get("scope", "")
+            detail = f"{param.get('keyword', 'parameter')} {param.get('type', 'bit')}"
+            if scope:
+                detail += f" ({scope})"
+            result.append(
+                lsp.DocumentSymbol(
+                    name=name,
+                    kind=lsp.SymbolKind.Constant,
+                    range=param_range,
+                    selection_range=param_range,
+                    detail=detail,
+                )
+            )
 
-    # Add instances
-    for name, inst in symbols.get("instances", {}).items():
-        inst_range = lsp.Range(
-            start=lsp.Position(line=inst["line"], character=inst["col"]),
-            end=lsp.Position(line=inst["line"], character=inst["col"] + len(name)),
-        )
-        result.append(
-            lsp.DocumentSymbol(
-                name=name,
-                kind=lsp.SymbolKind.Variable,
-                range=inst_range,
-                selection_range=inst_range,
-                detail=f"instance of {inst.get('type_name', 'unknown')}",
+    # Add instances (all entries, not just one per name)
+    for name, entries in symbols.get("instances", {}).items():
+        for inst in entries:
+            inst_range = lsp.Range(
+                start=lsp.Position(line=inst["line"], character=inst["col"]),
+                end=lsp.Position(line=inst["line"], character=inst["col"] + len(name)),
             )
-        )
+            scope = inst.get("scope", "")
+            detail = f"instance of {inst.get('type_name', 'unknown')}"
+            if scope:
+                detail += f" ({scope})"
+            result.append(
+                lsp.DocumentSymbol(
+                    name=name,
+                    kind=lsp.SymbolKind.Variable,
+                    range=inst_range,
+                    selection_range=inst_range,
+                    detail=detail,
+                )
+            )
 
     return result if result else None
 
@@ -1039,8 +1271,15 @@ def completion(params: lsp.CompletionParams) -> Optional[lsp.CompletionList]:
             documentation=desc if desc else None,
         ))
 
-    # Add user-defined symbols
-    for name, defn in symbols.get("definitions", {}).items():
+    # Add user-defined symbols (deduplicate by name for completion list)
+    seen_names: set = set()
+    for name, entries in symbols.get("definitions", {}).items():
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        defn = _resolve_symbol(entries, line_num)
+        if defn is None:
+            continue
         kind = defn.get("kind", "")
         if kind in {"addrmap", "regfile", "reg", "field", "signal", "struct", "mem"}:
             items.append(lsp.CompletionItem(
@@ -1097,56 +1336,58 @@ def inlay_hints(params: lsp.InlayHintParams) -> Optional[List[lsp.InlayHint]]:
     symbols = _symbol_cache.get(document.uri, {})
     hints: List[lsp.InlayHint] = []
 
-    # Add type hints for parameter declarations
-    for name, param in symbols.get("parameters", {}).items():
-        param_type = param.get("type", "")
-        default_val = param.get("default_value", "")
-        line = param.get("line", 0)
-        col = param.get("col", 0)
+    # Add type hints for parameter declarations (all entries)
+    for name, entries in symbols.get("parameters", {}).items():
+        for param in entries:
+            param_type = param.get("type", "")
+            default_val = param.get("default_value", "")
+            line = param.get("line", 0)
+            col = param.get("col", 0)
 
-        # Type hint after parameter name
-        if param_type:
-            hints.append(lsp.InlayHint(
-                position=lsp.Position(line=line, character=col + len(name)),
-                label=f": {param_type}",
-                kind=lsp.InlayHintKind.Type,
-                padding_left=False,
-                padding_right=True,
-            ))
+            # Type hint after parameter name
+            if param_type:
+                hints.append(lsp.InlayHint(
+                    position=lsp.Position(line=line, character=col + len(name)),
+                    label=f": {param_type}",
+                    kind=lsp.InlayHintKind.Type,
+                    padding_left=False,
+                    padding_right=True,
+                ))
 
-        # Value hint
-        if default_val:
-            hints.append(lsp.InlayHint(
-                position=lsp.Position(line=line, character=col + len(name)),
-                label=f" = {default_val}",
-                kind=lsp.InlayHintKind.Parameter,
-                padding_left=True,
-                padding_right=False,
-            ))
+            # Value hint
+            if default_val:
+                hints.append(lsp.InlayHint(
+                    position=lsp.Position(line=line, character=col + len(name)),
+                    label=f" = {default_val}",
+                    kind=lsp.InlayHintKind.Parameter,
+                    padding_left=True,
+                    padding_right=False,
+                ))
 
     # Add type hints for instance references to parameters
-    lines = document.source.split("\n")
+    doc_lines = document.source.split("\n")
     param_re = re.compile(r"#\s*\(\s*\.(\w+)\s*\(\s*([^)]+)\s*\)")
-    for line_num, line_text in enumerate(lines):
+    for line_num, line_text in enumerate(doc_lines):
         if line_num < params.range.start.line or line_num > params.range.end.line:
             continue
         for m in param_re.finditer(line_text):
             param_name = m.group(1)
             param_value = m.group(2).strip()
             if param_name in symbols.get("parameters", {}):
-                param_info = symbols["parameters"][param_name]
-                param_type = param_info.get("type", "")
-                if param_type:
-                    hints.append(lsp.InlayHint(
-                        position=lsp.Position(
-                            line=line_num,
-                            character=m.start(2),
-                        ),
-                        label=f"{param_type}: ",
-                        kind=lsp.InlayHintKind.Type,
-                        padding_left=False,
-                        padding_right=False,
-                    ))
+                param_info = _resolve_symbol(symbols["parameters"][param_name], line_num)
+                if param_info:
+                    param_type = param_info.get("type", "")
+                    if param_type:
+                        hints.append(lsp.InlayHint(
+                            position=lsp.Position(
+                                line=line_num,
+                                character=m.start(2),
+                            ),
+                            label=f"{param_type}: ",
+                            kind=lsp.InlayHintKind.Type,
+                            padding_left=False,
+                            padding_right=False,
+                        ))
 
     return hints if hints else None
 
