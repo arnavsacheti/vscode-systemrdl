@@ -87,9 +87,26 @@ reg status_reg {
 };
 """
 
+    # Source with the same field name in two different regs
+    SCOPED_RDL = """\
+reg reg_a {
+    field {} data[8] = 0;
+    field {} valid[1] = 0;
+};
+
+reg reg_b {
+    field {} data[16] = 0;
+    field {} ready[1] = 0;
+};
+
+addrmap top {
+    reg_a a_inst @ 0x0;
+    reg_b b_inst @ 0x4;
+};
+"""
+
     def _extract(self, source, uri="file:///test.rdl"):
         """Helper to import and call the symbol extraction function."""
-        # Import here to avoid issues with bundled libs not being available
         try:
             from lsp_server import _extract_symbols_from_source
             return _extract_symbols_from_source(source, uri)
@@ -104,11 +121,27 @@ reg status_reg {
 
         defs = symbols["definitions"]
         assert "my_reg" in defs
-        assert defs["my_reg"]["kind"] == "reg"
+        assert len(defs["my_reg"]) >= 1
+        assert defs["my_reg"][0]["kind"] == "reg"
         assert "status_reg" in defs
-        assert defs["status_reg"]["kind"] == "reg"
+        assert defs["status_reg"][0]["kind"] == "reg"
         assert "my_map" in defs
-        assert defs["my_map"]["kind"] == "addrmap"
+        assert defs["my_map"][0]["kind"] == "addrmap"
+
+    def test_definitions_are_lists(self):
+        """Test that definitions are stored as lists, not single dicts."""
+        symbols = self._extract(self.BASIC_RDL)
+        if symbols is None:
+            return
+
+        for name, entries in symbols["definitions"].items():
+            assert isinstance(entries, list), f"definitions['{name}'] should be a list"
+            for entry in entries:
+                assert isinstance(entry, dict)
+                assert "line" in entry
+                assert "col" in entry
+                assert "kind" in entry
+                assert "scope" in entry
 
     def test_components_list(self):
         """Test that components list is populated."""
@@ -129,7 +162,7 @@ reg status_reg {
 
         defs = symbols["definitions"]
         assert "status_e" in defs
-        assert defs["status_e"]["kind"] == "enum"
+        assert defs["status_e"][0]["kind"] == "enum"
 
     def test_references_found(self):
         """Test that identifier references are tracked."""
@@ -156,9 +189,53 @@ reg my_reg {
 
         # my_reg in the comment should be excluded
         refs = symbols["references"].get("my_reg", [])
-        # Only non-comment references should be present
         for ref in refs:
             assert ref["line"] != 0  # Line 0 is the comment
+
+    def test_duplicate_names_preserved(self):
+        """Test that the same name in different scopes is not clobbered."""
+        symbols = self._extract(self.SCOPED_RDL)
+        if symbols is None:
+            return
+
+        # Both reg_a and reg_b should be in definitions
+        defs = symbols["definitions"]
+        assert "reg_a" in defs
+        assert "reg_b" in defs
+
+        # The instances a_inst and b_inst should both appear
+        insts = symbols["instances"]
+        assert "a_inst" in insts
+        assert len(insts["a_inst"]) >= 1
+        assert insts["a_inst"][0]["type_name"] == "reg_a"
+        assert "b_inst" in insts
+        assert len(insts["b_inst"]) >= 1
+        assert insts["b_inst"][0]["type_name"] == "reg_b"
+
+    def test_scope_metadata_present(self):
+        """Test that scope metadata (scope path, start/end lines) exists."""
+        symbols = self._extract(self.SCOPED_RDL)
+        if symbols is None:
+            return
+
+        insts = symbols["instances"]
+        # a_inst is inside 'top' addrmap
+        if "a_inst" in insts and insts["a_inst"]:
+            entry = insts["a_inst"][0]
+            assert "scope" in entry
+            assert "scope_start" in entry
+            assert "scope_end" in entry
+            assert entry["scope"] == "top"
+
+    def test_component_end_lines(self):
+        """Test that component entries track end_line."""
+        symbols = self._extract(self.SCOPED_RDL)
+        if symbols is None:
+            return
+
+        for comp in symbols["components"]:
+            assert "end_line" in comp
+            assert comp["end_line"] >= comp["line"]
 
 
 class TestParameterExtraction:
@@ -178,8 +255,6 @@ reg my_reg #(longint unsigned WIDTH = 32) {
     field {} data[WIDTH] = 0;
 };
 """
-        # Parameters defined with #() syntax require more complex parsing
-        # This test verifies the basic parameter regex works
         symbols = self._extract(source)
         if symbols is None:
             return
@@ -199,14 +274,95 @@ localparam longint unsigned LOCAL_P = 100;
 
         params = symbols["parameters"]
         if "MY_PARAM" in params:
-            assert params["MY_PARAM"]["keyword"] == "parameter"
-            assert params["MY_PARAM"]["default_value"] == "42"
+            assert len(params["MY_PARAM"]) >= 1
+            assert params["MY_PARAM"][0]["keyword"] == "parameter"
+            assert params["MY_PARAM"][0]["default_value"] == "42"
 
         if "FLAG" in params:
-            assert params["FLAG"]["keyword"] == "parameter"
+            assert params["FLAG"][0]["keyword"] == "parameter"
 
         if "LOCAL_P" in params:
-            assert params["LOCAL_P"]["keyword"] == "localparam"
+            assert params["LOCAL_P"][0]["keyword"] == "localparam"
+
+    def test_parameter_has_scope(self):
+        """Test that parameters carry scope metadata."""
+        source = """\
+parameter longint unsigned TOP_P = 1;
+reg my_reg {
+    field {} data[8] = 0;
+};
+"""
+        symbols = self._extract(source)
+        if symbols is None:
+            return
+
+        params = symbols["parameters"]
+        if "TOP_P" in params:
+            entry = params["TOP_P"][0]
+            assert "scope" in entry
+            # At file level, scope should be empty string
+            assert entry["scope"] == ""
+
+
+# ===================================================================
+# Test _resolve_symbol
+# ===================================================================
+
+class TestResolveSymbol:
+    """Test the scope-aware symbol resolver."""
+
+    def _resolve(self, entries, line):
+        try:
+            from lsp_server import _resolve_symbol
+            return _resolve_symbol(entries, line)
+        except ImportError:
+            pytest.skip("lsp_server module not importable (missing bundled libs)")
+
+    def test_single_entry(self):
+        """A single entry is always returned."""
+        entries = [{"line": 5, "col": 0, "scope": "", "scope_start": 0, "scope_end": 100}]
+        result = self._resolve(entries, 50)
+        assert result is entries[0]
+
+    def test_picks_enclosing_scope(self):
+        """When cursor is inside a scope, that entry wins."""
+        entries = [
+            {"line": 2, "col": 0, "kind": "field", "scope": "reg_a", "scope_start": 0, "scope_end": 5},
+            {"line": 8, "col": 0, "kind": "field", "scope": "reg_b", "scope_start": 7, "scope_end": 12},
+        ]
+        # Cursor at line 3 -> should resolve to reg_a's entry
+        result = self._resolve(entries, 3)
+        assert result is not None
+        assert result["scope"] == "reg_a"
+
+        # Cursor at line 10 -> should resolve to reg_b's entry
+        result = self._resolve(entries, 10)
+        assert result is not None
+        assert result["scope"] == "reg_b"
+
+    def test_picks_narrowest_scope(self):
+        """When multiple scopes enclose the cursor, pick the narrowest."""
+        entries = [
+            {"line": 1, "col": 0, "scope": "outer", "scope_start": 0, "scope_end": 20},
+            {"line": 5, "col": 0, "scope": "outer.inner", "scope_start": 3, "scope_end": 10},
+        ]
+        result = self._resolve(entries, 7)
+        assert result is not None
+        assert result["scope"] == "outer.inner"
+
+    def test_fallback_to_first_when_outside_all(self):
+        """When cursor is outside all scopes, fall back to the first entry."""
+        entries = [
+            {"line": 2, "col": 0, "scope": "a", "scope_start": 1, "scope_end": 4},
+            {"line": 8, "col": 0, "scope": "b", "scope_start": 7, "scope_end": 10},
+        ]
+        result = self._resolve(entries, 50)
+        assert result is entries[0]
+
+    def test_empty_list(self):
+        """Empty list returns None."""
+        result = self._resolve([], 0)
+        assert result is None
 
 
 # ===================================================================
@@ -482,3 +638,7 @@ class TestWithTestData:
         assert "references" in symbols
         assert "components" in symbols
         assert len(symbols["components"]) > 0
+
+        # Verify scoped structure
+        for name, entries in symbols["definitions"].items():
+            assert isinstance(entries, list)
