@@ -3,21 +3,23 @@
     "name": "SystemRDL",
     "scopeName": "source.systemrdl",
     "patterns": [
-        {
-            "include": "#comments"
-        },
-        {
-            "include": "#strings"
-        },
-        {
-            "include": "#numbers"
-        },
-        {
-            "include": "#keywords"
-        },
-        {
-            "include": "#types"
-        }
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#verilog_literals" },
+        { "include": "#preprocessor" },
+        { "include": "#component_definitions" },
+        { "include": "#property_assignments" },
+        { "include": "#builtin_properties" },
+        { "include": "#access_types" },
+        { "include": "#component_keywords" },
+        { "include": "#control_keywords" },
+        { "include": "#storage_keywords" },
+        { "include": "#type_keywords" },
+        { "include": "#boolean_literals" },
+        { "include": "#operators" },
+        { "include": "#punctuation" },
+        { "include": "#identifiers" }
     ],
     "repository": {
         "comments": {
@@ -29,7 +31,13 @@
                 {
                     "name": "comment.block.systemrdl",
                     "begin": "/\\*",
-                    "end": "\\*/"
+                    "end": "\\*/",
+                    "patterns": [
+                        {
+                            "name": "comment.block.systemrdl",
+                            "match": "."
+                        }
+                    ]
                 }
             ]
         },
@@ -51,24 +59,223 @@
         "numbers": {
             "patterns": [
                 {
-                    "name": "constant.numeric.systemrdl",
-                    "match": "\\b(0x[0-9A-Fa-f]+|0b[01_]+|\\d+(?:_\\d+)*)\\b"
+                    "name": "constant.numeric.hex.systemrdl",
+                    "match": "\\b0[xX][0-9A-Fa-f_]+\\b"
+                },
+                {
+                    "name": "constant.numeric.binary.systemrdl",
+                    "match": "\\b0[bB][01_]+\\b"
+                },
+                {
+                    "name": "constant.numeric.decimal.systemrdl",
+                    "match": "\\b\\d[\\d_]*\\b"
                 }
             ]
         },
-        "keywords": {
+        "verilog_literals": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.verilog.systemrdl",
+                    "match": "\\b\\d+'[bBhHdDoO][0-9A-Fa-f_xXzZ]+\\b"
+                }
+            ]
+        },
+        "preprocessor": {
+            "patterns": [
+                {
+                    "name": "meta.preprocessor.systemrdl",
+                    "match": "`(include|define|undef|ifdef|ifndef|else|endif|line|pragma)\\b",
+                    "captures": {
+                        "0": { "name": "keyword.control.directive.systemrdl" }
+                    }
+                },
+                {
+                    "name": "meta.preprocessor.include.systemrdl",
+                    "match": "`include\\s+[\"<][^\">]+[\">]",
+                    "captures": {
+                        "0": { "name": "keyword.control.directive.include.systemrdl" }
+                    }
+                }
+            ]
+        },
+        "component_definitions": {
+            "patterns": [
+                {
+                    "match": "\\b(addrmap|regfile|reg|field|signal|enum|struct|constraint|mem)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=#|\\{|\\()",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.component.systemrdl" },
+                        "2": { "name": "entity.name.type.component.systemrdl" }
+                    }
+                }
+            ]
+        },
+        "property_assignments": {
+            "patterns": [
+                {
+                    "match": "\\b(desc|name|encode|precedence|dontcompare|donttest|errextbus|hdl_path|hdl_path_gate|hdl_path_gate_slice|ispresent|addressing|alignment|sharedextbus|bigendian|littleendian|bridge|accesswidth|regwidth|mementries|memwidth|rsvdset|rsvdsetX)\\s*=",
+                    "captures": {
+                        "1": { "name": "support.type.property-name.systemrdl" }
+                    }
+                }
+            ]
+        },
+        "builtin_properties": {
+            "patterns": [
+                {
+                    "name": "support.type.property-name.systemrdl",
+                    "match": "\\b(sw|hw|reset|resetsignal|we|wel|swwe|swwel|hwenable|hwmask|haltmask|haltenable|sticky|stickybit|intr|enable|mask|halt|next|overflow|underflow|incr|decr|incrvalue|decrvalue|incrsaturate|decrsaturate|incrthreshold|decrthreshold|saturate|threshold|counter|compact|regalign|sharedextbus|singlepulse|paritycheck|anded|ored|xored|fieldwidth|swmod|swacc|onread|onwrite|precedence)\\b"
+                }
+            ]
+        },
+        "access_types": {
+            "patterns": [
+                {
+                    "name": "constant.language.access.systemrdl",
+                    "match": "\\b(rw|wr|r|w|rw1|w1|na)\\b"
+                },
+                {
+                    "name": "constant.language.onread.systemrdl",
+                    "match": "\\b(rclr|rset|ruser)\\b"
+                },
+                {
+                    "name": "constant.language.onwrite.systemrdl",
+                    "match": "\\b(woset|woclr|wot|wzs|wzc|wzt|wclr|wset|wuser)\\b"
+                },
+                {
+                    "name": "constant.language.addressing.systemrdl",
+                    "match": "\\b(compact|regalign|fullalign)\\b"
+                }
+            ]
+        },
+        "component_keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.declaration.component.systemrdl",
+                    "match": "\\b(addrmap|regfile|reg|field|signal|enum|struct|constraint|mem)\\b"
+                }
+            ]
+        },
+        "control_keywords": {
             "patterns": [
                 {
                     "name": "keyword.control.systemrdl",
-                    "match": "\\b(addrmap|regfile|reg|field|property|signal|enum|struct|const|external|internal|if|else|for|foreach|while|return|default)\\b"
+                    "match": "\\b(if|else|for|foreach|while|return|default|property|component|type|alias|external|internal|abstract|inside|encode|all)\\b"
                 }
             ]
         },
-        "types": {
+        "storage_keywords": {
+            "patterns": [
+                {
+                    "name": "storage.modifier.systemrdl",
+                    "match": "\\b(const|parameter|localparam)\\b"
+                }
+            ]
+        },
+        "type_keywords": {
             "patterns": [
                 {
                     "name": "storage.type.systemrdl",
-                    "match": "\\b(bit|bits|byte|shortint|int|longint|unsigned|signed|string|boolean|bool)\\b"
+                    "match": "\\b(bit|longint|boolean|string|accesstype|addressingtype|onreadtype|onwritetype)\\b"
+                },
+                {
+                    "name": "storage.type.modifier.systemrdl",
+                    "match": "\\b(unsigned|signed)\\b"
+                }
+            ]
+        },
+        "boolean_literals": {
+            "patterns": [
+                {
+                    "name": "constant.language.boolean.systemrdl",
+                    "match": "\\b(true|false)\\b"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.assignment.systemrdl",
+                    "match": "=(?!=)"
+                },
+                {
+                    "name": "keyword.operator.comparison.systemrdl",
+                    "match": "(==|!=|<=|>=|<|>)"
+                },
+                {
+                    "name": "keyword.operator.logical.systemrdl",
+                    "match": "(&&|\\|\\||!)"
+                },
+                {
+                    "name": "keyword.operator.bitwise.systemrdl",
+                    "match": "(&|\\||\\^|~|<<|>>)"
+                },
+                {
+                    "name": "keyword.operator.arithmetic.systemrdl",
+                    "match": "(\\+|-|\\*|/|%)"
+                },
+                {
+                    "name": "keyword.operator.ternary.systemrdl",
+                    "match": "(\\?|:)"
+                },
+                {
+                    "name": "keyword.operator.range.systemrdl",
+                    "match": "\\.\\.(?=\\d)"
+                }
+            ]
+        },
+        "punctuation": {
+            "patterns": [
+                {
+                    "name": "punctuation.terminator.systemrdl",
+                    "match": ";"
+                },
+                {
+                    "name": "punctuation.separator.systemrdl",
+                    "match": ","
+                },
+                {
+                    "name": "punctuation.accessor.systemrdl",
+                    "match": "\\."
+                },
+                {
+                    "name": "punctuation.section.block.begin.systemrdl",
+                    "match": "\\{"
+                },
+                {
+                    "name": "punctuation.section.block.end.systemrdl",
+                    "match": "\\}"
+                },
+                {
+                    "name": "punctuation.section.brackets.begin.systemrdl",
+                    "match": "\\["
+                },
+                {
+                    "name": "punctuation.section.brackets.end.systemrdl",
+                    "match": "\\]"
+                },
+                {
+                    "name": "punctuation.section.parens.begin.systemrdl",
+                    "match": "\\("
+                },
+                {
+                    "name": "punctuation.section.parens.end.systemrdl",
+                    "match": "\\)"
+                },
+                {
+                    "name": "keyword.operator.address.systemrdl",
+                    "match": "@"
+                },
+                {
+                    "name": "keyword.operator.address-stride.systemrdl",
+                    "match": "\\+="
+                }
+            ]
+        },
+        "identifiers": {
+            "patterns": [
+                {
+                    "name": "variable.other.systemrdl",
+                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
                 }
             ]
         }

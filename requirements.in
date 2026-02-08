@@ -14,5 +14,3 @@ packaging
 systemrdl-compiler
 tree-sitter
 tree-sitter-systemrdl
-
-# TODO: Add your tool here

@@ -85,6 +85,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         registerCommand(`${serverId}.restart`, async () => {
             await runServer();
         }),
+        // PeakRDL build command
+        registerCommand(`${serverId}.peakrdl.build`, async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === 'systemrdl') {
+                if (lsClient) {
+                    await lsClient.sendRequest('workspace/executeCommand', {
+                        command: 'systemrdl.peakrdl.build',
+                        arguments: [editor.document.uri.toString()],
+                    });
+                    vscode.window.showInformationMessage('PeakRDL build triggered.');
+                } else {
+                    vscode.window.showErrorMessage('SystemRDL language server is not running.');
+                }
+            } else {
+                vscode.window.showWarningMessage('Open a .rdl file to run PeakRDL build.');
+            }
+        }),
     );
 
     setImmediate(async () => {

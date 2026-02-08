@@ -59,14 +59,12 @@ async function createServer(
 
     // Options to control the language client
     const clientOptions: LanguageClientOptions = {
-        // Register the server for python documents
+        // Register the server for SystemRDL documents
         documentSelector: isVirtualWorkspace()
-            ? [{ language: 'python' }]
+            ? [{ language: 'systemrdl' }]
             : [
-                  { scheme: 'file', language: 'python' },
-                  { scheme: 'untitled', language: 'python' },
-                  { scheme: 'vscode-notebook', language: 'python' },
-                  { scheme: 'vscode-notebook-cell', language: 'python' },
+                  { scheme: 'file', language: 'systemrdl' },
+                  { scheme: 'untitled', language: 'systemrdl' },
               ],
         outputChannel: outputChannel,
         traceOutputChannel: outputChannel,

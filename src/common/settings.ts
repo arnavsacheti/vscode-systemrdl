@@ -108,6 +108,15 @@ export function checkIfConfigurationChanged(e: ConfigurationChangeEvent, namespa
         `${namespace}.interpreter`,
         `${namespace}.importStrategy`,
         `${namespace}.showNotifications`,
+        `${namespace}.peakrdl.buildOnSave`,
+        `${namespace}.peakrdl.buildConfigPath`,
+        `${namespace}.peakrdl.outputDirectory`,
+        `${namespace}.peakrdl.generators`,
+        `${namespace}.inlayHints.parameterTypes`,
+        `${namespace}.inlayHints.parameterValues`,
+        `${namespace}.semanticHighlighting`,
+        `${namespace}.diagnostics.enabled`,
+        `${namespace}.includePaths`,
     ];
     const changed = settings.map((s) => e.affectsConfiguration(s));
     return changed.includes(true);

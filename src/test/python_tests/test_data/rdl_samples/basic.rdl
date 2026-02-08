@@ -1,0 +1,24 @@
+// Basic SystemRDL test file
+
+reg my_reg #(longint unsigned PARAM_WIDTH = 8) {
+    default sw = rw;
+    default hw = r;
+
+    field {} data[PARAM_WIDTH] = 0;
+    field {} status[4] = 0;
+};
+
+reg status_reg {
+    field {} error[1] = 0;
+    field {} ready[1] = 0;
+    field {} busy[1] = 0;
+};
+
+addrmap my_map {
+    default addressing = compact;
+    default regwidth = 32;
+
+    my_reg ctrl_reg @ 0x0000;
+    status_reg stat @ 0x0004;
+    my_reg data_reg @ 0x0008;
+};
