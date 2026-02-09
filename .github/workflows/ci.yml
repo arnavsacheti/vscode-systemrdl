@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run format-check
+
+      - name: Install Python lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install nox
+          pip install -r requirements.txt
+          pip install -r src/test/python_tests/requirements.txt
+          pip install pylint black isort
+
+      - name: Run Python linters
+        run: |
+          pylint -d W0511 ./bundled/tool
+          pylint -d W0511 --ignore=./src/test/python_tests/test_data ./src/test/python_tests
+          pylint -d W0511 noxfile.py
+          black --check ./bundled/tool ./src/test/python_tests noxfile.py
+          isort --check ./bundled/tool ./src/test/python_tests noxfile.py
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: npm ci
+
+      - run: npm run compile
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r src/test/python_tests/requirements.txt
+
+      - name: Install bundled libraries
+        run: |
+          pip install -t ./bundled/libs --no-cache-dir --implementation py --no-deps --upgrade -r requirements.txt
+
+      - name: Run tests
+        run: pytest src/test/python_tests
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - run: npm ci
+
+      - name: Install bundled libraries
+        run: |
+          pip install -t ./bundled/libs --no-cache-dir --implementation py --no-deps --upgrade -r requirements.txt
+
+      - name: Build VSIX
+        run: npm run vsce-package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: systemrdl-vsix
+          path: systemrdl.vsix
