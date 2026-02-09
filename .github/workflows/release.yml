@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check version change
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.version.outputs.changed }}
+      new_version: ${{ steps.version.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect version change
+        id: version
+        run: |
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          OLD_VERSION=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
+          if [ "$NEW_VERSION" != "$OLD_VERSION" ] && [ -n "$OLD_VERSION" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $OLD_VERSION -> $NEW_VERSION"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged: $NEW_VERSION"
+          fi
+
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.version_changed == 'true'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - run: npm ci
+
+      - name: Install bundled libraries
+        run: |
+          pip install -t ./bundled/libs --no-cache-dir --implementation py --no-deps --upgrade -r requirements.txt
+
+      - name: Build VSIX
+        run: npm run vsce-package
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.new_version }}
+          name: v${{ needs.check-version.outputs.new_version }}
+          generate_release_notes: true
+          files: systemrdl.vsix
+
+      # ---------------------------------------------------------
+      # Uncomment the step below to publish to the VS Code Marketplace.
+      # Add a VSCE_PAT repository secret with a Personal Access Token
+      # from https://dev.azure.com (Marketplace > Manage Publishers).
+      # ---------------------------------------------------------
+      # - name: Publish to VS Code Marketplace
+      #   run: npx @vscode/vsce publish --packagePath systemrdl.vsix
+      #   env:
+      #     VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      # ---------------------------------------------------------
+      # Uncomment the step below to publish to Open VSX Registry.
+      # Add an OVSX_PAT repository secret with a token from
+      # https://open-vsx.org.
+      # ---------------------------------------------------------
+      # - name: Publish to Open VSX
+      #   run: npx ovsx publish systemrdl.vsix
+      #   env:
+      #     OVSX_PAT: ${{ secrets.OVSX_PAT }}
